@@ -1,0 +1,313 @@
+{
+  "Comment": "Restore the prod RDS Cluster snapshot into the staging environment and redeploy the environment.",
+  "StartAt": "Retrieve the latest prod RDS Cluster snapshot",
+  "TimeoutSeconds": 18000,
+  "States": {
+    "Retrieve the latest prod RDS Cluster snapshot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:rds:describeDBClusterSnapshots",
+      "Parameters": {
+        "DbClusterIdentifier.$": "$.ProdDBClusterIdentifier",
+        "SnapshotType": "automated"
+      },
+      "ResultSelector": {
+        "DBClusterSnapshotIdentifier.$": "$.DbClusterSnapshots[(@.length-1)].DbClusterSnapshotIdentifier"
+      },
+      "ResultPath": "$.DescribeDBClusterSnapshotsResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Rds.InternalFailure",
+            "Rds.ServiceUnavailable",
+            "Rds.ThrottlingException",
+            "Rds.SdkClientException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],      
+      "Next": "Restore the prod RDS Cluster snapshot into the staging environment"
+    },
+    "Restore the prod RDS Cluster snapshot into the staging environment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:rds:restoreDBClusterFromSnapshot",
+      "Parameters": {
+        "DbClusterIdentifier.$": "States.Format('{}{}{}{}', $.StagingDBClusterIdentifierPrefix ,States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, '-,T'), 0), States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, '-,T'), 1), States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, '-,T'), 2))",
+        "DbClusterInstanceClass": "db.t3.large",
+        "DbClusterParameterGroupName": "default.aurora-mysql5.7",
+        "DbSubnetGroupName": "default-public-subnet-group",
+        "EngineVersion": "5.7.mysql_aurora.2.11.2",
+        "Engine": "aurora-mysql",
+        "SnapshotIdentifier.$": "$.DescribeDBClusterSnapshotsResult.DBClusterSnapshotIdentifier",
+        "VpcSecurityGroupIds": [
+          "sg-xxxxxxxxxxxxxxxxx"
+        ]
+      },
+      "ResultSelector": {
+        "Endpoint.$": "$.DbCluster.Endpoint",
+        "ReaderEndpoint.$": "$.DbCluster.ReaderEndpoint",
+        "DBClusterIdentifier.$": "$.DbCluster.DbClusterIdentifier"
+      },
+      "ResultPath": "$.RestoreDBClusterFromSnapshotResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Rds.InternalFailure",
+            "Rds.ServiceUnavailable",
+            "Rds.ThrottlingException",
+            "Rds.SdkClientException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Wait 30 min until a staging RDS Cluster reaches the state closer to Available"
+    },
+    "Wait 30 min until a staging RDS Cluster reaches the state closer to Available": {
+      "Type": "Wait",
+      "Seconds": 1800,
+      "Next": "Wait until a staging RDS Cluster is Available"
+    },
+    "Wait until a staging RDS Cluster is Available": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload.$": "$.RestoreDBClusterFromSnapshotResult",
+        "FunctionName": "${RDSHelperArn}"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 1
+        }
+      ],
+      "Next": "Create a staging RDS Instance"
+    },
+    "Create a staging RDS Instance": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:rds:createDBInstance",
+      "Parameters": {
+        "DbInstanceClass": "db.t3.medium",
+        "DbInstanceIdentifier.$": "States.Format('{}{}', $.StagingDBClusterIdentifierPrefix, States.UUID())",
+        "Engine": "aurora-mysql",
+        "DbClusterIdentifier.$": "$.RestoreDBClusterFromSnapshotResult.DBClusterIdentifier"
+      },
+      "ResultSelector": {
+        "DBInstanceIdentifier.$": "$.DbInstance.DbInstanceIdentifier"
+      },
+      "ResultPath": "$.CreateDBInstanceResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Rds.InternalFailure",
+            "Rds.ServiceUnavailable",
+            "Rds.ThrottlingException",
+            "Rds.SdkClientException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Wait 9 min until a staging RDS Instance reaches the state closer to Available"
+    },
+    "Wait 9 min until a staging RDS Instance reaches the state closer to Available": {
+      "Type": "Wait",
+      "Seconds": 540,
+      "Next": "Wait until a staging RDS Instance is Available"
+    },
+    "Wait until a staging RDS Instance is Available": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload.$": "$.CreateDBInstanceResult",
+        "FunctionName": "${RDSHelperArn}"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 3
+        }
+      ],
+      "Next": "Update and deploy the staging environment"
+    },
+    "Update and deploy the staging environment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload.$": "$.RestoreDBClusterFromSnapshotResult",
+        "FunctionName": "${UpdateEnvironmentAndDeployArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": null,
+      "Next": "List old staging RDS resources to delete"
+    },
+    "List old staging RDS resources to delete": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload": {
+          "DBClusterToDeletePrefix.$": "$.StagingDBClusterIdentifierPrefix"
+        },
+        "FunctionName": "${RDSHelperArn}"
+      },
+      "ResultSelector": {
+        "OldStagingRDSResources.$": "$.Payload"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 3
+        }
+      ],
+      "Next": "Check if the old staging RDS Cluster exists"
+    },
+    "Check if the old staging RDS Cluster exists": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.OldStagingRDSResources.DBClusterIdentifier",
+          "IsPresent": true,
+          "Next": "Parallel deletion of old staging RDS Instances"
+        }
+      ],
+      "Default": "There is no old staging RDS Cluster to delete"
+    },
+    "There is no old staging RDS Cluster to delete": {
+      "Type": "Succeed"
+    },
+    "Parallel deletion of old staging RDS Instances": {
+      "Type": "Map",
+      "ItemsPath": "$.OldStagingRDSResources.DBClusterMembersIdentifiers",
+      "ResultPath": null,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Delete the old staging RDS Instance",
+        "States": {
+          "Delete the old staging RDS Instance": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:rds:deleteDBInstance",
+            "Parameters": {
+              "DbInstanceIdentifier.$": "$",
+              "SkipFinalSnapshot": true
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Rds.InternalFailure",
+                  "Rds.ServiceUnavailable",
+                  "Rds.ThrottlingException",
+                  "Rds.SdkClientException"
+                ],
+                "IntervalSeconds": 6,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "MaxConcurrency": 12,
+      "Next": "Delete the old staging RDS Cluster"
+    },
+    "Delete the old staging RDS Cluster": {
+      "Resource": "arn:aws:states:::aws-sdk:rds:deleteDBCluster",
+      "Type": "Task",
+      "Parameters": {
+        "DbClusterIdentifier.$": "$.OldStagingRDSResources.DBClusterIdentifier",
+        "SkipFinalSnapshot": true
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Rds.InternalFailure",
+            "Rds.ServiceUnavailable",
+            "Rds.ThrottlingException",
+            "Rds.SdkClientException"
+          ],
+          "IntervalSeconds": 6,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Restore the prod RDS Cluster snapshot in the staging environment and redeploy the environment.'
+
+Globals:
+  Function:
+    Architectures:
+      - x86_64
+    Handler: app.lambda_handler
+    Runtime: ruby2.7
+    Timeout: 900
+    MemorySize: 128
+    PropagateTags: True
+    Tags:
+      project: 'project'
+      env: 'env'
+      owner: 'owner'
+      developer: 'developer'
+      jira_issue: 'jira_issue'
+      provisioner: 'cloudformation'
+
+Parameters:
+  ProdDBClusterIdentifier:
+    Type: String
+    Default: 'prod-mysql-aurora'
+    Description: 'The prod RDS Cluster identifier. The most recent snapshot will be restored in the staging environment.'
+  StagingDBClusterIdentifierPrefix:
+    Type: String
+    Default: 'staging-mysql-aurora-'
+    Description: 'The staging RDS Cluster identifier prefix. The target location for restoring the prod environment data.'
+  VaporProjectIdStaging:
+    Type: String
+    Default: '1111'
+    Description: 'The Vapor project id of the staging environment.'
+  VaporEnvironmentNameStaging:
+    Type: String
+    Default: 'my-staging'
+    Description: 'The Vapor environment name of the staging environment.'
+  VaporApiTokenLocation:
+    Type: 'AWS::SSM::Parameter::Name'
+    Default: '/custom/VAPOR_API_TOKEN'
+    Description: 'The Vapor token for API access.'
+
+Resources:
+  ProdRDSRestoreToStagingOrchestrator:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/statemachine.asl.json
+      DefinitionSubstitutions:
+        RDSHelperArn: !GetAtt 'RDSHelper.Arn'
+        UpdateEnvironmentAndDeployArn: !GetAtt 'UpdateAndDeployEnvironment.Arn'
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Description: 'Schedule to run the state machine every day except on weekends.'
+            Enabled: True
+            Schedule: 'cron(00 5 ? * MON-FRI *)'
+            Input: !Sub '{"ProdDBClusterIdentifier": "${ProdDBClusterIdentifier}", "StagingDBClusterIdentifierPrefix": "${StagingDBClusterIdentifierPrefix}"}'
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref 'RDSHelper'
+        - LambdaInvokePolicy:
+            FunctionName: !Ref 'UpdateAndDeployEnvironment'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds:DescribeDBClusters
+              Resource:
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:*'
+            - Effect: Allow
+              Action:
+                - rds:DescribeDBClusterSnapshots
+              Resource:
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster-snapshot:*'
+            - Effect: Allow
+              Action:
+                - rds:RestoreDBClusterFromSnapshot
+              Resource:
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${StagingDBClusterIdentifierPrefix}*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster-pg:default*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster-snapshot:*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:og:default**'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:subgrp:*'
+            - Effect: Allow
+              Action:
+                - rds:CreateDBInstance
+              Resource:
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${StagingDBClusterIdentifierPrefix}*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${StagingDBClusterIdentifierPrefix}*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:og:default*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:pg:default*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:secgrp:*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:subgrp:*'
+            - Effect: Allow
+              Action:
+                - rds:DeleteDBInstance
+              Resource:
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${StagingDBClusterIdentifierPrefix}*'
+            - Effect: Allow
+              Action:
+                - rds:DeleteDBCluster
+              Resource:
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${StagingDBClusterIdentifierPrefix}*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster-snapshot:*'
+                - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${StagingDBClusterIdentifierPrefix}*'
+      PropagateTags: True
+      Tags:
+        project: 'project'
+        env: 'env'
+        owner: 'owner'
+        developer: 'developer'
+        jira_issue: 'jira_issue'
+        provisioner: 'cloudformation'
+
+  RDSHelper:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: 'Contains helper scripts like RDS Waiters.'
+      CodeUri: functions/RDSHelper/
+      Policies:
+        - arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess
+
+  UpdateAndDeployEnvironment:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: 'Update and deploy the environment.'
+      CodeUri: functions/UpdateAndDeployEnvironment/
+      Environment:
+        Variables:
+          PROJECT: !Ref 'VaporProjectIdStaging'
+          ENVIRONMENT: !Ref 'VaporEnvironmentNameStaging'
+          VAPOR_API_TOKEN_LOCATION: !Ref 'VaporApiTokenLocation'
+      Policies:
+        - SSMParameterWithSlashPrefixReadPolicy:
+            ParameterName: !Ref 'VaporApiTokenLocation'
