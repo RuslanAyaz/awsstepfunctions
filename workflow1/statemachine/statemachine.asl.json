@@ -1,5 +1,5 @@
 {
-  "Comment": "Restore the prod RDS Cluster snapshot into the staging environment and redeploy the environment.",
+  "Comment": "Restore the prod RDS Cluster snapshot into the staging RDS cluster and redeploy the application environment.",
   "StartAt": "Retrieve the latest prod RDS Cluster snapshot",
   "TimeoutSeconds": 18000,
   "States": {
@@ -27,9 +27,9 @@
           "BackoffRate": 2
         }
       ],      
-      "Next": "Restore the prod RDS Cluster snapshot into the staging environment"
+      "Next": "Restore the prod RDS Cluster snapshot into the staging RDS cluster"
     },
-    "Restore the prod RDS Cluster snapshot into the staging environment": {
+    "Restore the prod RDS Cluster snapshot into the staging RDS cluster": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:rds:restoreDBClusterFromSnapshot",
       "Parameters": {
@@ -165,9 +165,9 @@
           "BackoffRate": 3
         }
       ],
-      "Next": "Update and deploy the staging environment"
+      "Next": "Update and deploy the staging application environment"
     },
-    "Update and deploy the staging environment": {
+    "Update and deploy the staging application environment": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {

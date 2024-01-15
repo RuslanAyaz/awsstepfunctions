@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: 'Restore the prod RDS Cluster snapshot in the staging environment and redeploy the environment.'
+Description: 'Restore the prod RDS Cluster snapshot into the staging RDS cluster and redeploy the application environment.'
 
 Globals:
   Function:
